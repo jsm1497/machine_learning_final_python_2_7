@@ -4,6 +4,12 @@
 # In[1]:
 
 
+get_ipython().system(u'pip install mlxtend')
+
+
+# In[2]:
+
+
 import sys
 import pickle
 import pandas as pd
@@ -45,25 +51,24 @@ sys.path.append("../tools/")
 #from feature_format import featureFormat, targetFeatureSplit
 #from tester import dump_classifier_and_data
 
-get_ipython().run_line_magic('matplotlib', 'inline')
+get_ipython().magic(u'matplotlib inline')
 
 
-# In[2]:
+# In[4]:
 
 
 ### Load the dictionary containing the dataset
-with open("final_project_dataset.pkl", "rb") as data_file:
-    data_dict = pickle.load(data_file)
+# with open("final_project_dataset.pkl", "r") as data_file:
+data_dict = pickle.load(open("final_project_dataset.pkl", "r"))
     
     
 ### Load the dictionary containing the processed text from the emails
 ### Code is in vectorize_text.py - heavily borrowed from the scripts used in the text learning module
 ## as well as the email_preprocess module
-with open("email_text.pkl", "rb") as data_file:
-    email_dict = pickle.load(data_file)    
+email_dict = pickle.load(open("email_text.pkl", "r"))    
 
 
-# In[3]:
+# In[5]:
 
 
 ##convert dictionary to dataframe for easier manipulation
@@ -79,13 +84,13 @@ df_email_text = pd.DataFrame.from_dict(email_dict,orient="index")
 df_email_text.rename(index=str,columns={0:'email_text'}, inplace=True)
 
 
-# In[4]:
+# In[6]:
 
 
 df = pd.merge(left=df,right=df_email_text,how='left',left_on='email_address',right_index=True)
 
 
-# In[5]:
+# In[7]:
 
 
 ### Task 2: Remove outliers
@@ -99,7 +104,7 @@ df.poi = df.poi.astype(int)
 df.drop(columns=['email_address'],inplace=True)
 
 
-# In[6]:
+# In[8]:
 
 
 vectorizer = TfidfVectorizer(sublinear_tf=True, max_df=0.85,
@@ -130,7 +135,7 @@ terms = vectorizer.get_feature_names()
 ##https://stackoverflow.com/questions/30653642/combining-bag-of-words-and-other-features-in-one-model-using-sklearn-and-pandas
 
 
-# In[7]:
+# In[9]:
 
 
 df_email_transformed = pd.DataFrame(email_transformed.toarray(),columns=terms)
@@ -140,7 +145,7 @@ df = df.join(df_email_transformed,rsuffix='et_')
 df.drop(columns=['email_text'], inplace=True)
 
 
-# In[8]:
+# In[10]:
 
 
 
@@ -194,7 +199,7 @@ def process_data(data,label_column='poi',scale=0,rsmpl=0,feature_list=None):
     return X_train, X_test, y_train, y_test, data
 
 
-# In[9]:
+# In[11]:
 
 
 df = df.fillna(0)
@@ -202,7 +207,7 @@ df = df.fillna(0)
 X_train, X_test, y_train, y_test, df = process_data(df,rsmpl=1)#, feature_list=['bonus','total_stock_value','other'])
 
 
-# In[10]:
+# In[12]:
 
 
 ## https://machinelearningmastery.com/feature-selection-machine-learning-python/
@@ -220,7 +225,7 @@ df_feature_importance = pd.DataFrame(fs,index=X_train.columns)
 df_feature_importance = df_feature_importance.sort_values(by=0, ascending=False)
 
 
-# In[11]:
+# In[13]:
 
 
 df_feature_importance = df_feature_importance[df_feature_importance[0] >= .06].reset_index()
@@ -237,7 +242,7 @@ feature_list = chosen_features
 print(df_feature_importance)
 
 
-# In[12]:
+# In[14]:
 
 
 ## Pulled in the GaussianNB classifier when attempting to use text data
@@ -255,7 +260,7 @@ print(gb.score(X_test,y_test))
 print(cr)
 
 
-# In[13]:
+# In[15]:
 
 
 ### Task 5: Tune your classifier to achieve better than .3 precision and recall 
@@ -273,7 +278,7 @@ cr = classification_report(y_test, y_pred)
 print(cr)
 
 
-# In[14]:
+# In[16]:
 
 
 ##https://towardsdatascience.com/how-to-visualize-a-decision-tree-from-a-random-forest-in-python-using-scikit-learn-38ad2d75f21c
@@ -301,7 +306,8 @@ graph = pydotplus.graph_from_dot_data(dot_data.getvalue())
 Image(graph.create_png())
 
 
-# In[15]:
+
+# In[17]:
 
 
 dt_clf = tree.DecisionTreeClassifier()
@@ -315,7 +321,7 @@ Grid_CV.fit(X_train,y_train)
 Grid_CV.best_params_
 
 
-# In[16]:
+# In[18]:
 
 
 ## https://stackoverflow.com/questions/27122757/sklearn-set-params-takes-exactly-1-argument/29028601
@@ -344,7 +350,7 @@ graph = pydotplus.graph_from_dot_data(dot_data.getvalue())
 Image(graph.create_png())
 
 
-# In[17]:
+# In[19]:
 
 
 feature_list = list(feature_list)
@@ -352,7 +358,7 @@ if feature_list[0] != 'poi':
     feature_list.insert(0, 'poi')
 
 
-# In[18]:
+# In[20]:
 
 
 ### Task 3: Create new feature(s)

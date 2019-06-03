@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[24]:
+# In[2]:
 
 
 #!/usr/bin/python
@@ -30,7 +30,7 @@ import pydotplus
 from collections import defaultdict
 
 
-# In[25]:
+# In[3]:
 
 
 poi_emails = poiEmails()
@@ -47,16 +47,22 @@ email_names = set()
 with open(r"C:\Users\jcsmi329\Documents\Homework\Udacity\Projects\Machine Learning\final_project\final_project_dataset.pkl", "rb") as data_file:
     data_dict = pickle.load(data_file)
 
-    
 for x in data_dict.values():
     em = x.get('email_address')
     if em != "NaN":
         final_project_emails.append(em)
 
 
-# In[26]:
+# In[4]:
 
 
+### Load the dictionary containing the processed text from the emails
+### Code is in vectorize_text.py - heavily borrowed from the scripts used in the text learning module
+## as well as the email_preprocess module
+# with open("email_text.pkl", "rb") as data_file:
+#     email_dict = pickle.load(data_file)    
+
+# if not email_dict:
 
 for filename in os.listdir(from_emails_folder):
 
@@ -77,19 +83,21 @@ for filename in os.listdir(from_emails_folder):
                 word_data[file_email_address].append(t)
                 email.close()
 
+
 print("emails processed")
 
 
 
-# In[30]:
+
+# In[7]:
 
 
-output_file = r"C:\Users\jcsmi329\Documents\Homework\Udacity\Projects\Machine Learning\final_project\email_text.pkl"
+output_file = r"C:\Users\jcsmi329\Documents\Homework\Udacity\Projects\Machine Learning\final_project - python_2_7\email_text.pkl"
 
-pickle.dump(word_data,open(output_file,'wb'))
+pickle.dump(word_data,open(output_file,'w'))
 
 
-# In[4]:
+# In[6]:
 
 
 
@@ -126,7 +134,7 @@ selected_feature_names = terms[support]
 ##https://stackoverflow.com/questions/30653642/combining-bag-of-words-and-other-features-in-one-model-using-sklearn-and-pandas
 
 
-# In[5]:
+# In[ ]:
 
 
 from sklearn.naive_bayes import GaussianNB
@@ -136,7 +144,7 @@ gb = GaussianNB()
 gb.fit(features_train, labels_train)
 
 
-# In[6]:
+# In[ ]:
 
 
 print(gb.score(features_test,labels_test))
