@@ -4,12 +4,6 @@
 # In[1]:
 
 
-get_ipython().system(u'pip install mlxtend')
-
-
-# In[2]:
-
-
 import sys
 import pickle
 import pandas as pd
@@ -33,350 +27,487 @@ from sklearn.feature_selection import SelectPercentile, f_classif
 
 from sklearn.metrics import classification_report
 from sklearn.metrics import confusion_matrix
+from sklearn import metrics
 
 from sklearn import preprocessing
 from sklearn import utils
 
-from sklearn.externals.six import StringIO  
+from sklearn.externals.six import StringIO
 from sklearn.tree import export_graphviz
-from IPython.display import Image  
+from IPython.display import Image
 import pydotplus
 from mlxtend.plotting import plot_decision_regions
 
 from tester import dump_classifier_and_data
 from feature_format import featureFormat, targetFeatureSplit
 
+from collections import defaultdict
+
 sys.path.append("../tools/")
 
-#from feature_format import featureFormat, targetFeatureSplit
-#from tester import dump_classifier_and_data
-
 get_ipython().magic(u'matplotlib inline')
+
+
+# In[2]:
+
+
+## declare simple data types
+
+adj_types = ["unscaled", "unscaled - custom", "scaled", "scaled - custom"]
+
+text_shape = "The original dataset has {0} rows and {1} columns"
+text_class_dist = "The original dataset has {0} POI records and {1} non-POI records"
+text_nan = "The following table is the count of NaN values in the original dataset."
+text_final_clf = "The best performing classifier was the {0} using {1} features with an F1-score of {2}."
+text_other_clf = "{0} classifier had an F1-score of {1}"
+text_dataset_size = ("The original dataset was resampled to add 50 POI records, to assist with the imbalanced classes. After being split into training and testing data"
+                     " the training dataset had {0} rows and the testing dataset had {1} rows.")
+text_comp_perf = ("The dataset with the highest performance used {2} features. With this dataset, my custom feature's best classifier had an F1-score of {0},"
+                  " while the standard feature's best classifier had an F1-score of {1}.")
+
+text_final_features = ("The best performing classifier used {0} features. "
+                       "Below are the most important features and their relative importance according to the ExtraTreeClassifier. {1}"
+                       )
+text_gt_10_features = "Note: Because there are more than 10 final features, I am only including the first 10 below."
+
+trn_set_size = 0
+tst_set_size = 0
+
+
+# In[3]:
+
+
+## declare objects
+
+datasets = []
+clf_models = []
+f1_score = []
+cr_dict = {}
+
+df_nan = None
+
+desc_variables = {"text_shape": text_shape, "text_class_dist": text_class_dist, "df_nan": df_nan,
+                  "text_nan": text_nan, "trn_set_size": trn_set_size, "tst_set_size": tst_set_size}
 
 
 # In[4]:
 
 
-### Load the dictionary containing the dataset
-# with open("final_project_dataset.pkl", "r") as data_file:
-data_dict = pickle.load(open("final_project_dataset.pkl", "r"))
-    
-    
-### Load the dictionary containing the processed text from the emails
-### Code is in vectorize_text.py - heavily borrowed from the scripts used in the text learning module
-## as well as the email_preprocess module
-email_dict = pickle.load(open("email_text.pkl", "r"))    
+# process data
+# process_data function accepts a few different arguments, allowing me to scale, resample, and filter the features
+# https://elitedatascience.com/imbalanced-classes
+
+
+def process_data(data, label_column='poi', scale=0, rsmpl=0, feature_list=None):
+    # Resample first, if needed
+    # https://stackoverflow.com/questions/52735334/python-pandas-resample-dataset-to-have-balanced-classes
+
+    if rsmpl:
+
+        df_majority = data[data[label_column] == 0]
+        df_minority = data[data[label_column] == 1]
+
+        # Upsample minority class
+        df_minority_upsampled = utils.resample(df_minority.copy(),
+                                               n_samples=50,
+                                               replace=True     # sample with replacement
+                                               )
+
+        # because we are resampling, and we need to export the data to a dictionary, we need to add some
+        # randomness to the resampled names
+        new_index_names = []
+        for i, j in enumerate(df_minority_upsampled.index):
+            new_index_names.append(j + '_' + str(np.random.random()))
+
+        df_minority_upsampled.index = new_index_names
+
+        # Combine majority class with upsampled minority class
+        data = pd.concat([df_majority, df_minority_upsampled, df_minority])
+
+    # separate features from labels
+
+    features = data.drop(columns=[label_column])
+    labels = data[label_column]
+
+    if feature_list:
+        features = features[feature_list]
+
+# adjusted scaler to use StandardScaler, as found in this post on sklearn
+# https://scikit-learn.org/stable/auto_examples/classification/plot_classifier_comparison.html
+    if scale:
+        for x in features.columns:
+            if is_numeric_dtype(features[x]):
+                features[x] = preprocessing.StandardScaler().fit_transform(
+                    features[x].values.reshape(-1, 1))
+
+    features = features.astype(float)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        features, labels, stratify=labels)
+
+    desc_variables["trn_set_size"] = len(X_train)
+    desc_variables["tst_set_size"] = len(X_test)
+
+    return X_train, X_test, y_train, y_test, data
 
 
 # In[5]:
 
 
-##convert dictionary to dataframe for easier manipulation
+# https://machinelearningmastery.com/feature-selection-machine-learning-python/
 
-df = pd.DataFrame.from_dict(data_dict, orient="index")
+# Feature Importance with Extra Trees Classifier
 
 
-for x, y in email_dict.items():
-    email_dict[x] = ''.join(y)
+def get_best_features(X_train, X_test, y_train, percentile):
+    et_clf = ExtraTreesClassifier(n_estimators=100)
+    et_clf.fit(X_train, y_train)
 
-df_email_text = pd.DataFrame.from_dict(email_dict,orient="index")
+    df_feature_importance = pd.DataFrame(
+        et_clf.feature_importances_, index=X_train.columns)
+    df_feature_importance = df_feature_importance.sort_values(
+        by=0, ascending=False)
+    df_feature_importance = df_feature_importance[df_feature_importance[0] >= percentile].reset_index(
+    )
 
-df_email_text.rename(index=str,columns={0:'email_text'}, inplace=True)
+    feature_list = df_feature_importance['index']
+
+    X_train = X_train[feature_list]
+    X_test = X_test[feature_list]
+
+    return X_train, X_test, df_feature_importance
 
 
 # In[6]:
 
 
-df = pd.merge(left=df,right=df_email_text,how='left',left_on='email_address',right_index=True)
+def get_best_features_and_append_datasets(adj_type):
+    if 'custom' in adj_type:
+        perc = .0
+    else:
+        perc = .06
+
+    if 'scale' in adj_type:
+        __X_train, __X_test, best_features = get_best_features(
+            X_train_scale, X_test_scale, y_train_scale, perc)
+
+        datasets.append((__X_train, __X_test, y_train_scale, y_test_scale,
+                         best_features, adj_type, df_scale))
+    else:
+        __X_train, __X_test, best_features = get_best_features(
+            X_train_std, X_test_std, y_train_std, perc)
+
+        datasets.append((__X_train, __X_test, y_train_std, y_test_std,
+                         best_features, adj_type, df_std))
 
 
 # In[7]:
 
 
-### Task 2: Remove outliers
-#fillna did not work (likely due to NaN being strings, not np.nan), so use replace
-df.replace("NaN",0,inplace=True)
+def run_all_datasets():
+    for X_train, X_test, y_train, y_test, feature_list, adj_type, df_loop in datasets:
+        for clf, params in clf_models:
 
-df.drop("TOTAL", inplace = True)
+            if params:
+                Grid_CV = GridSearchCV(clf, params, cv=5, iid=True)
+                gv = Grid_CV.fit(X_train, y_train)
+                clf.set_params(**gv.best_params_)
 
-df.poi = df.poi.astype(int)
+            clf.fit(X_train, y_train)
+            clf.score(X_test, y_test)
 
-df.drop(columns=['email_address'],inplace=True)
+            y_pred = clf.predict(X_test)
+
+            f1_score.append((clf, df_loop, feature_list, adj_type,
+                                  metrics.f1_score(y_test, y_pred)))
+
+            cr = classification_report(y_test, y_pred, output_dict=True)
+            if adj_type not in cr_dict:
+                cr_dict[adj_type] = {clf.__class__.__name__:cr}
+            else:
+                cr_dict[adj_type][clf.__class__.__name__] = cr
 
 
 # In[8]:
 
 
-vectorizer = TfidfVectorizer(sublinear_tf=True, max_df=0.85,
-                             stop_words='english',max_features=10000)
+def process_initial_data():
 
-email_transformed = vectorizer.fit_transform(df['email_text'].fillna(''))
-terms = vectorizer.get_feature_names()
+    # Load the dictionary containing the dataset
+    # with open("final_project_dataset.pkl", "r") as data_file:
+    data_dict = pickle.load(open("final_project_dataset.pkl", "r"))
 
+    # Load the dictionary containing the processed text from the emails
+    # Code is in vectorize_text.py - heavily borrowed from the scripts used in the text learning module
+    # as well as the email_preprocess module
+    email_dict = pickle.load(open("email_text.pkl", "r"))
 
-### feature selection, because text is super high dimensional and 
-### can be really computationally chewy as a result
-# selector = SelectPercentile(f_classif, percentile=80)
-# selector.fit(X_train_email_transformed, df['poi'])
-# X_train_email = selector.transform(X_train_email_transformed).toarray()
-# X_test_email  = selector.transform(X_test_email_transformed).toarray()
+    # convert dictionary to dataframe for easier manipulation
 
+    df = pd.DataFrame.from_dict(data_dict, orient="index")
 
-## https://stackoverflow.com/questions/41724432/ml-getting-feature-names-after-feature-selection-selectpercentile-python
-## https://stackoverflow.com/questions/9296658/how-to-filter-a-numpy-array-using-another-arrays-values
+    # adjust email dataset to format needed to join to df
+    for x, y in email_dict.items():
+        email_dict[x] = ''.join(y)
 
-# support = np.asarray(selector.get_support(),'bool')
+    df_email_text = pd.DataFrame.from_dict(email_dict, orient="index")
 
-# terms = np.asarray(terms)
+    df_email_text.rename(index=str, columns={0: 'email_text'}, inplace=True)
 
-# selected_feature_names = terms[support]
+    # describe data
+    # Understanding the Dataset and Question
 
+    # Task 2: Remove outliers
+    # fillna did not work (likely due to NaN being strings, not np.nan), so use replace
 
-##https://stackoverflow.com/questions/30653642/combining-bag-of-words-and-other-features-in-one-model-using-sklearn-and-pandas
+    df.replace("NaN", np.nan, inplace=True)
+    df.poi = df.poi.astype(int)
+
+    if len(df[df.index == "TOTAL"].values):
+        df.drop("TOTAL", inplace=True)
+
+    # Record initial data exploration variables, such as shape of data and number of NANs
+
+    x, y = df.shape
+
+    desc_variables["text_shape"] = text_shape.format(x, y)
+
+    desc_variables["text_class_dist"] = text_class_dist.format(
+        len(df[df.poi == 1].values), x - len(df[df.poi == 1].values))
+
+    desc_variables["df_nan"] = pd.DataFrame(
+        df.isna().sum()).rename(index={0: 'NANs'})
+
+    # Create joined dataset
+
+    df = pd.merge(left=df, right=df_email_text, how='left',
+                  left_on='email_address', right_index=True).drop(columns=['email_address'])
+
+    # set up TfIdf Vectorizer for converting email text to features
+
+    vectorizer = TfidfVectorizer(sublinear_tf=True, max_df=0.50,
+                                 stop_words='english', max_features=5000)
+
+    email_transformed = vectorizer.fit_transform(df['email_text'].fillna(''))
+
+    df_email_transformed = pd.DataFrame(
+        email_transformed.toarray(), columns=vectorizer.get_feature_names())
+
+    return df.join(df_email_transformed, rsuffix='et_').drop(columns=['email_text']).fillna(0)
 
 
 # In[9]:
 
 
-df_email_transformed = pd.DataFrame(email_transformed.toarray(),columns=terms)
+# split data into training and testing sets
+# return df as well, since we modify columns and data if we resample, scale, or remove features
 
+df = process_initial_data()
 
-df = df.join(df_email_transformed,rsuffix='et_')
-df.drop(columns=['email_text'], inplace=True)
+X_train_std, X_test_std, y_train_std, y_test_std, df_std = process_data(
+    df.copy(), rsmpl=1)
+X_train_scale, X_test_scale, y_train_scale, y_test_scale, df_scale = process_data(
+    df.copy(), rsmpl=1, scale=1)
 
 
 # In[10]:
 
 
-
-## process data
-## process_data function accepts a few different arguments, allowing me to scale, resample, and filter the features
-## https://elitedatascience.com/imbalanced-classes
-
-def process_data(data,label_column='poi',scale=0,rsmpl=0,feature_list=None):    
-    ##Resample first, if needed
-    ##https://stackoverflow.com/questions/52735334/python-pandas-resample-dataset-to-have-balanced-classes    
-    
-    if rsmpl:
-        
-        df_majority = data[data[label_column]==0]
-        df_minority = data[data[label_column]==1]      
-
-        # Upsample minority class
-        df_minority_upsampled = utils.resample(df_minority.copy(),
-                                         n_samples=50,
-                                         replace=True     # sample with replacement
-                                        )
-        
-        ## because we are resampling, and we need to export the data to a dictionary, we need to add some
-        ## randomness to the resampled names
-        new_index_names = []
-        for i, j in enumerate(df_minority_upsampled.index):
-            new_index_names.append(j + '_' + str(np.random.random()))
-            
-            
-        df_minority_upsampled.index = new_index_names
-        
-        # Combine majority class with upsampled minority class
-        data = pd.concat([df_majority, df_minority_upsampled,df_minority])
-            
-            
-    ##separate features from labels
-    
-    features = data.drop(columns=[label_column])
-    labels = data[label_column]      
-    
-    if feature_list:
-        features = features[feature_list]          
-        
-    if scale:
-        for x in features.columns:
-            if is_numeric_dtype(features[x]):
-                features[x] = preprocessing.scale(features[x])        
-    
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, stratify=labels)
-    
-    return X_train, X_test, y_train, y_test, data
+for x in adj_types:
+    get_best_features_and_append_datasets(x)
 
 
 # In[11]:
 
 
-df = df.fillna(0)
+# Add all models to a list, with parameters for tuning if needed, to be fit and scored at the end
 
-X_train, X_test, y_train, y_test, df = process_data(df,rsmpl=1)#, feature_list=['bonus','total_stock_value','other'])
+# Naive Bayes
+
+gb = GaussianNB()
+
+clf_models.append((gb, None))
+
+# SVM
+SVC_clf = SVC(kernel='rbf', C=1000, gamma='scale', random_state=12)
+
+parameters = {"kernel": ['rbf', 'poly', 'sigmoid'], "C": [.1,
+                                                          10, 100, 1000], "gamma": ['scale'], "random_state": [40]}
+
+clf_models.append((SVC_clf, parameters))
+
+# Decision Tree
+
+dt_clf = tree.DecisionTreeClassifier()
+
+parameters = {"min_samples_split": [2, 3], "max_features": [
+    None, 2, 5, ], "random_state": [40]}
+
+clf_models.append((dt_clf, parameters))
 
 
 # In[12]:
 
 
-## https://machinelearningmastery.com/feature-selection-machine-learning-python/
-
-# Feature Importance with Extra Trees Classifier
-
-# load data
-et_clf = ExtraTreesClassifier(n_estimators=100)
-et_clf.fit(X_train, y_train)
-
-fs = et_clf.feature_importances_
-
-df_feature_importance = pd.DataFrame(fs,index=X_train.columns)
-
-df_feature_importance = df_feature_importance.sort_values(by=0, ascending=False)
+# https://scikit-learn.org/stable/auto_examples/classification/plot_classifier_comparison.html
 
 
 # In[13]:
 
 
-df_feature_importance = df_feature_importance[df_feature_importance[0] >= .06].reset_index()
-
-chosen_features = df_feature_importance['index']
-
-X_train = X_train[chosen_features]
-
-X_test = X_test[chosen_features]
-
-## assign to feature_list, which will be used when we dump the data at the end of the script
-feature_list = chosen_features
-
-print(df_feature_importance)
+# https://stackoverflow.com/questions/31421413/how-to-compute-precision-recall-accuracy-and-f1-score-for-the-multiclass-case
 
 
 # In[14]:
 
 
-## Pulled in the GaussianNB classifier when attempting to use text data
-## Ended up removing the text, but this still gives pretty decent results
+# run feature tuning and scoring on all datasets in datasets list
+del f1_score[:]
 
-gb = GaussianNB()
-
-gb.fit(X_train, y_train)
-
-y_pred = gb.predict(X_test)
-
-cr = classification_report(y_test, y_pred)
-
-print(gb.score(X_test,y_test))
-print(cr)
+run_all_datasets()
 
 
 # In[15]:
 
 
-### Task 5: Tune your classifier to achieve better than .3 precision and recall 
-### using our testing script. Check the tester.py script in the final project
-### folder for details on the evaluation method, especially the test_classifier function. 
+# get max by type - do this so we can compare custom features to standard features
 
-clf = SVC(kernel='rbf',C=1000,gamma='scale',random_state=12)
-clf.fit(X_train,y_train)
+max_by_type = defaultdict(lambda: defaultdict(int))
 
-y_pred = clf.predict(X_test)
+i = 0
+for __clf, __df, __features, __adj_type, __f1_score in f1_score:
+    if __f1_score > max_by_type[__adj_type]["max"]:
+        max_by_type[__adj_type]["max"] = __f1_score
+        max_by_type[__adj_type]["max_i"] = i
+        max_by_type[__adj_type]["features"] = __features
+        max_by_type[__adj_type]["df"] = __df
+        max_by_type[__adj_type]["clf"] = __clf
+    i += 1
 
-print(round(clf.score(X_test,y_test),2))
-cr = classification_report(y_test, y_pred)
+# get overall best performing classifier
 
-print(cr)
+mx = 0
+mx_adj_type = ""
+
+for x, y in max_by_type.items():
+    if y.get("max") > mx:
+        mx = y.get("max")
+        mx_adj_type = x
+
+
+final_clf, final_df, final_features, final_adj_type, final_f1_score = f1_score[max_by_type.get(
+    mx_adj_type).get("max_i")]
 
 
 # In[16]:
 
 
-##https://towardsdatascience.com/how-to-visualize-a-decision-tree-from-a-random-forest-in-python-using-scikit-learn-38ad2d75f21c
+exp_feature_list = list(final_features['index'].values)
+if exp_feature_list[0] != 'poi':
+    exp_feature_list.insert(0, 'poi')
 
-rf_clf = None
-
-rf_clf = RandomForestClassifier(min_samples_split=3, n_estimators=150, random_state = 12)
-
-rf_clf.fit(X_train,y_train)
-
-
-y_pred = rf_clf.predict(X_test)
-
-cr = classification_report(y_test, y_pred)
-
-print(rf_clf.score(X_test,y_test))
-print(cr)
-
-dot_data = StringIO()
-export_graphviz(rf_clf.estimators_[1], out_file=dot_data,  
-                filled=True, rounded=True,
-                special_characters=True
-               ,feature_names =chosen_features)
-graph = pydotplus.graph_from_dot_data(dot_data.getvalue())  
-Image(graph.create_png())
-
+dump_classifier_and_data(
+    final_clf, final_df.to_dict('index'), exp_feature_list)
 
 
 # In[17]:
 
 
-dt_clf = tree.DecisionTreeClassifier()
-
-parameters = {"min_samples_split":[2,3,4,5],"max_features":[None,2,3,4,5,], "random_state":[40]}
-
-Grid_CV = GridSearchCV(dt_clf, parameters, cv =4)
-
-Grid_CV.fit(X_train,y_train)
-
-Grid_CV.best_params_
+text_final_clf = text_final_clf.format(final_clf.__class__.__name__,
+                                       final_adj_type, round(final_f1_score, 4))
 
 
 # In[18]:
 
 
-## https://stackoverflow.com/questions/27122757/sklearn-set-params-takes-exactly-1-argument/29028601
+standard_adj_type = final_adj_type.split(' ')[0]
 
-dt_clf.set_params(**Grid_CV.best_params_)
+custom_adj_type = final_adj_type.split(' ')[0] + ' - custom'
 
-dt_clf.fit(X_train,y_train)
+custom_features_f1_score = f1_score[max_by_type.get(
+    custom_adj_type).get("max_i")][4]
 
-dt_clf.score(X_test,y_test)
+unscaled_features_f1_score = f1_score[max_by_type.get(
+    standard_adj_type).get("max_i")][4]
 
-clf = dt_clf
-
-y_pred = dt_clf.predict(X_test)
-
-print(dt_clf.score(X_test,y_test))
-cr = classification_report(y_test, y_pred)
-
-print(cr)
-
-dot_data = StringIO()
-export_graphviz(dt_clf, out_file=dot_data,  
-                filled=True, rounded=True,
-                special_characters=True
-               ,feature_names =chosen_features)
-graph = pydotplus.graph_from_dot_data(dot_data.getvalue())  
-Image(graph.create_png())
+text_comp_perf = text_comp_perf.format(round(custom_features_f1_score, 4), round(
+    unscaled_features_f1_score, 4), standard_adj_type)
 
 
 # In[19]:
 
 
-feature_list = list(feature_list)
-if feature_list[0] != 'poi':
-    feature_list.insert(0, 'poi')
+text_dataset_size = text_dataset_size.format(
+    desc_variables["trn_set_size"], desc_variables["tst_set_size"])
 
 
 # In[20]:
 
 
-### Task 3: Create new feature(s)
-### Store to my_dataset for easy export below.
-my_dataset = df.to_dict('index')
-
-feature_labels = X_train.columns
-
-### Task 6: Dump your classifier, dataset, and features_list so anyone can
-### check your results. You do not need to change anything below, but make sure
-### that the version of poi_id.py that you submit can be run on its own and
-### generates the necessary .pkl files for validating your results.
+if len(final_features) > 10:
+    text_final_features = text_final_features.format(
+        len(final_features), text_gt_10_features)
+    disp_final_features = final_features[:10]
+else:
+    text_final_features = text_final_features.format(len(final_features), '')
+    disp_final_features = final_features
 
 
+# In[21]:
 
-dump_classifier_and_data(clf, my_dataset, feature_list)
+
+other_clf_perf = []
+
+for __clf, __df, __features, __adj_type, __f1_score in f1_score:
+    if __adj_type == final_adj_type and __clf is not final_clf:
+        other_clf_perf.append(text_other_clf.format(__clf.__class__.__name__,round(__f1_score,4)))
+        
 
 
+# In[22]:
+
+
+text_clf_params = "{0} classifier the parameters that were tuned were {1}"
+
+all_clf_params = []
+
+for __clf, __params in clf_models:
+    if __params:
+         all_clf_params.append(text_clf_params.format(__clf.__class__.__name__,', '.join(__params.keys())))
+
+
+# In[23]:
+
+
+## https://stackoverflow.com/questions/24988131/nested-dictionary-to-multiindex-dataframe-where-dictionary-keys-are-column-label
+
+reform = {(outerKey, innerKey, innerMostKey): values for outerKey, innerDict in 
+          cr_dict.iteritems() for innerKey, innerMostDict in innerDict.iteritems()
+          for innerMostKey, values in innerMostDict.iteritems() if 'avg' not in innerMostKey}
+
+cr = pd.DataFrame().from_dict(reform,'index')
+
+cr.index = cr.index.set_names(['adj_type','clf','class'])
+
+cr = cr[['recall','precision','f1-score']]
+
+cr = cr.round(4)
+
+
+# ## Files
+# parse_out_email_text.py - from Text Learning module
+# 
+# vectorize_text.py - based on script from Text Learning module
+# 
+# email_text.pkl - output of vectorize_text.py
+# 
+# poi_id.py - final project
+# 
+# tester.py - test script (Note: I could not get this to run, there were multiple errors with StratifiedShuffleSplit that I did not want to take the time to try and troubleshoot. However, it did run to the point of pulling in my data and attempting to score it, so that was enough validation for me)
+# 
+# 
+# ## Questions
+# 
 # ##### Summarize for us the goal of this project and how machine learning is useful in trying to accomplish it. As part of your answer, give some background on the dataset and how it can be used to answer the project question. Were there any outliers in the data when you got it, and how did you handle those?  [relevant rubric items: “data exploration”, “outlier investigation”]
 # 
 # The goal of this project is to use the given data that we have about the Enron employees financial and email data to try and determine which were/would have been persons of interest in the investigation. Machine learning is a very useful tool here, because there is a lot of data (especially in the emails) and a lot of patterns - the financial data alone has roughly 20 features. It is hard for humans to find patterns out of this much data, so we turn to machine learning to help.
@@ -385,47 +516,83 @@ dump_classifier_and_data(clf, my_dataset, feature_list)
 # 
 # The only outlier I noticed was the "Total" record, which had numbers way higher than any other record. Once I removed this record, I didn't see any other large outliers, so I left the rest of the potential outliers in.
 # 
+# ##### Data exploration
+# 
+# {{desc_variables["text_shape"]}}
+# 
+# {{desc_variables["text_class_dist"]}}
+# 
+# {{desc_variables["text_nan"]}}
+# 
+# {{desc_variables["df_nan"]}}
 # 
 # ##### What features did you end up using in your POI identifier, and what selection process did you use to pick them? Did you have to do any scaling? Why or why not? As part of the assignment, you should attempt to engineer your own feature that does not come ready-made in the dataset -- explain what feature you tried to make, and the rationale behind it. (You do not necessarily have to use it in the final analysis, only engineer and test it.) In your feature selection step, if you used an algorithm like a decision tree, please also give the feature importances of the features that you use, and if you used an automated feature selection function like SelectKBest, please report the feature scores and reasons for your choice of parameter values.  [relevant rubric items: “create new features”, “intelligently select features”, “properly scale features”]
 # 
-# I ended up using 9 features - every feature that my ExtraTreeClassifier had listed as greater than or equal to .06 importance.
+# I used an ExtraTreeClassifier to determine the features to use - I used a 60% percentile for the "standard" features (data + financial) and used a 0% percentile for my custom features - as I found that these were consistently marked as 0.0 performance.
 # 
-# I did not do any scaling - I attempted scaling, but found that whenever I did scale the features, my performance suffered. I'm not sure if this is due a technical issue on my end, or the data itself.
+# I ran three different classifiers against four different datasets - each combination of the standard features vs standard plus my custom features, as well as scaled vs unscaled. The best performing classifier ended up using the {{final_adj_type}} dataset.
 # 
-# I did attempt to engineer features - using the text from the emails in the emails_by_address folder. I did this work in vectorize_text.py file - I copied very heavily from the Text Learning module code, as well as email_preprocess.py from the Naive Bayes module.
+# My custom features were generated using the text from the emails that each person sent - based on what was in the emails_by_address folder. I then ran these through a TfIdf vectorizer. My assumption was that this should give quite a bit more power to the classifier, as POIs would probably use some words more often than non-POIs. As we'll see below, the datasets with the custom features have a better average Recall score than the dataset that uses only the standard features.
 # 
-# The features were to be the top X number of text features from the emails that would improve the model. I used a TfIdf Vectorizer and SelectPercentile with an 80th percentile filter. However, when I ran these features through the ExtraTreeClassifier, all of these features had an importance of 0. I'm not sure what I could have done differently here, but I do know that I will need to spend more time on this the next time I attempt something like this.
+# ##### The below stats are for the last run completed.
 # 
-# Lastly, while I did not do any scaling, I did resample my POI data. The reason for this was that there are so few records in the dataset, especially POI records, that it was very hard to train my models to a rate of precision and recall higher than .3. By resampling the data, I added more training records for the POI records, which gave my models more data to learn and predict.
+# {{text_comp_perf}}
+# 
+# {{text_final_features}}
+# 
+# {{disp_final_features}}
 # 
 # 
 # ##### What algorithm did you end up using? What other one(s) did you try? How did model performance differ between algorithms?  [relevant rubric item: “pick an algorithm”]
 # 
-# I ended up going with a Decision Tree Classifier. This gave me the highest precision and recall. The Random Forest Classifier had the same precision and recall, however the Decision Tree Classifier is easier to explain and understand, so I chose this one. I also tried an SVM and a Naive Bayes classifier - the SVM struggled, and when I was looking at the produced plots, I could see why - the way it separates the data points didn't work well with the patterns in the dataset. The Naive Bayes did very well in my text vectorizer model, however it did not perform as well with the financial + email dataset.
+# I found that the SVC and the Decision Tree Classifier gave me the best balanced score, on average. This being said, I wrote my script to return the classifier that gave me the best balanced score, so I never chose any one algorith per se, I let the metrics choose for me. Besides the SVC and Decision Tree, I also used a Gaussian Niave Bayes classifier, however this consistently performed much lower than the others.
 # 
-# Note - scores below will be different, but close, as the model is re-ran (This note is mostly to myself, as it took me longer than I'd like to admit to realize that the reason my scores were changing is because I was getting different records in my training and test datasets each time I re-ran this script.)
+# ##### The below stats are for the last run completed.
 # 
-# The SVM and Naive Bayes classifiers had decent precision - NB was at .83 and the SVM was at .77. While the SVM had a recall of 1, the NB classifier was only at .29. This is compared to the .89 in precision for both the Random Forest and the Decision Tree and 1 for recall, so the SVM and NB performed significantly worse.
+# {{text_final_clf}}
+# 
+# With this same set of features, the {{other_clf_perf[0]}}, and the {{other_clf_perf[1]}}.
 # 
 # ##### What does it mean to tune the parameters of an algorithm, and what can happen if you don’t do this well?  How did you tune the parameters of your particular algorithm? What parameters did you tune? (Some algorithms do not have parameters that you need to tune -- if this is the case for the one you picked, identify and briefly explain how you would have done it for the model that was not your final choice or a different model that does utilize parameter tuning, e.g. a decision tree classifier).  [relevant rubric items: “discuss parameter tuning”, “tune the algorithm”]
 # 
-# Tuning an algorithm is to find what parameters for that algorithm give you the best performance. Without tuning your algorithms, you can have much worse performance
+# Tuning an algorithm is to find what parameters for that algorithm give you the best performance. Without tuning your algorithms, you can have much worse performance.
 # 
-# I tuned the parameters for the Random Forest and SVM by hand, but I attempted to use the GridSearchCV on the decision tree classifier. After some time learning how to best use this, I ended up automating the selection of the parameters for the Decision Tree Classifier, with the parameters I tuned being min_samples_split and max_features, with a cross fold validation of 5. By using the best_params_ attribute of the GridSearchCV object, I was able to unpack these in my Decision Tree Classifier using the set_params() function.
+# With the exception of the Niave Bayes classifier, I tuned all of my classifiers using the GridSearchCV estimator, passing in a defined list of parameters and potential values. For the {{all_clf_params[0]}}, and for the {{all_clf_params[1]}}.
+# 
 # 
 # ##### What is validation, and what’s a classic mistake you can make if you do it wrong? How did you validate your analysis?  [relevant rubric items: “discuss validation”, “validation strategy”]
 # 
 # Validation is how you test that your model works on actual data. The most important thing here is to have, at the least, a separate training and testing data set. If you do your testing on your training data, you are not going to see how your model performs on real data, because it was already trained on the same data you are using for testing.
 # 
-# I validated my data by splitting it into separate training and testing data sets. I did not put the time in to do cross fold validation, although if I had to do the project again, this is what I would do.
+# I validated my data by splitting it into separate training and testing data sets. {{text_dataset_size}}
 # 
 # ##### Give at least 2 evaluation metrics and your average performance for each of them.  Explain an interpretation of your metrics that says something human-understandable about your algorithm’s performance. [relevant rubric item: “usage of evaluation metrics”]
 # 
-# The two evaluation metrics I paid the most attention to where precision and recall. The reason I chose to ignore the general accuracy score is that it does not give a great representation when you have imbalanced classes, which is what we had in this dataset.
+# There are two evaluation metrics I pay a lot of attention to, precision and recall. The reason I chose to ignore the general accuracy score is that it does not give a great representation when you have imbalanced classes, which is what we had in this dataset. However, the F1 score is another great evaluation metric, especially for imbalanced. It is the harmonic mean of precision and recall. Based on my research, this is a very good metric to use when classifying imbalanced classes with few positive records, like what we have here.
 # 
 # Precision is the ratio of how many times the model __accurately__ predicted the record was a POI record, compared to all of the times it predicted the the record was a POI record in total. For example, if it predicted 3 non-POI records were POI records, and it predicted 7 POI records were POI records, this would be a precision rate of .7.
 # 
 # Recall is a bit more important in this model, in my opinion. Recall is the ratio of how many times, when encountering a POI record, did it __correctly__ classify that it was a POI record.
 # 
-# On average I managed to get roughly .89 in precision, and 1 in recall on my Random Forest and Decision Tree classifiers. My SVM and NB classifiers were not quite as performant.
+# Below I have the average for recall, precision, and F1 for the POI class, grouped by both the dataset and by the classifier, as well as by both.
 # 
+# 
+# #### The below stats are for the last run completed.
+# 
+# ##### By feature type (unscaled/scaled, standard/custom)
+# 
+# {{cr[cr.index.get_level_values('class')=='1'].groupby('adj_type').mean()}}
+# 
+# ##### By classifier
+# 
+# {{cr[cr.index.get_level_values('class')=='1'].groupby('clf').mean()}}
+# 
+# ##### By both
+# 
+# {{cr[cr.index.get_level_values('class')=='1'].groupby(['adj_type','clf']).mean()}}
+
+# In[ ]:
+
+
+
+
